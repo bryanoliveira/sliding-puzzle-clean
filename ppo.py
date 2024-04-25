@@ -107,13 +107,37 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
+class Permute(nn.Module):
+    def __init__(self, *shape):
+        super().__init__()
+        self.shape = shape
+
+    def forward(self, x):
+        return x.permute(*self.shape)
 
 class Agent(nn.Module):
     def __init__(self, envs, hidden_size, hidden_layers):
         super().__init__()
+        if envs.single_observation_space.shape[-1] == 3 or envs.single_observation_space.shape[0] == 3:
+            self.encoder = nn.Sequential(
+                Permute(0, 3, 1, 2),
+                layer_init(nn.Conv2d(3, 32, 8, stride=4)),
+                nn.ReLU(),
+                layer_init(nn.Conv2d(32, 64, 4, stride=2)),
+                nn.ReLU(),
+                layer_init(nn.Conv2d(64, 64, 3, stride=1)),
+                nn.ReLU(),
+                nn.Flatten(),
+                layer_init(nn.Linear(64 * 7 * 7, hidden_size)),
+                nn.Tanh(),
+            )
+        else:
+            self.encoder = nn.Sequential(
+                layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), hidden_size)),
+                nn.Tanh(),
+            )
+
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), hidden_size)),
-            nn.Tanh(),
             *[
                 layer_init(nn.Linear(hidden_size, hidden_size)),
                 nn.Tanh(),
@@ -121,8 +145,6 @@ class Agent(nn.Module):
             layer_init(nn.Linear(hidden_size, 1), std=1.0),
         )
         self.actor = nn.Sequential(
-            layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), hidden_size)),
-            nn.Tanh(),
             *[
                 layer_init(nn.Linear(hidden_size, hidden_size)),
                 nn.Tanh(),
@@ -131,9 +153,11 @@ class Agent(nn.Module):
         )
 
     def get_value(self, x):
+        x = self.encoder(x)
         return self.critic(x)
 
     def get_action_and_value(self, x, action=None):
+        x = self.encoder(x)
         logits = self.actor(x)
         probs = Categorical(logits=logits)
         if action is None:
@@ -186,6 +210,7 @@ if __name__ == "__main__":
 
     agent = Agent(envs, args.hidden_size, args.hidden_layers).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    print(agent)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
