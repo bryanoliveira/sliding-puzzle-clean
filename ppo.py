@@ -15,6 +15,7 @@ import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
+from tqdm import tqdm
 
 import sliding_puzzles
 
@@ -45,9 +46,9 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 16
+    num_envs: int = 64
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 256
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = False
     """Toggle learning rate annealing for policy and value networks"""
@@ -55,9 +56,9 @@ class Args:
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 4
+    num_minibatches: int = 8
     """the number of mini-batches"""
-    update_epochs: int = 5
+    update_epochs: int = 8
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
@@ -112,20 +113,20 @@ class Agent(nn.Module):
         super().__init__()
         self.critic = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), hidden_size)),
-            *[
-                nn.Tanh(),
-                layer_init(nn.Linear(hidden_size, hidden_size)),
-            ] * hidden_layers,
             nn.Tanh(),
+            *[
+                layer_init(nn.Linear(hidden_size, hidden_size)),
+                nn.Tanh(),
+            ] * hidden_layers,
             layer_init(nn.Linear(hidden_size, 1), std=1.0),
         )
         self.actor = nn.Sequential(
             layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), hidden_size)),
-            *[
-                nn.Tanh(),
-                layer_init(nn.Linear(hidden_size, hidden_size)),
-            ] * hidden_layers,
             nn.Tanh(),
+            *[
+                layer_init(nn.Linear(hidden_size, hidden_size)),
+                nn.Tanh(),
+            ] * hidden_layers,
             layer_init(nn.Linear(hidden_size, envs.single_action_space.n), std=0.01),
         )
 
@@ -145,7 +146,8 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
+    args.exp_name += "_" + args.env_configs.replace("{", "").replace("}", "").replace(":", "_").replace(",", "_").replace(" ", "").replace('"', "")
+    run_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}-{args.exp_name}_{args.seed}"
     if args.track:
         import wandb
 
@@ -174,9 +176,10 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
+    print(f"device: {device}")
 
     # env setup
-    envs = gym.vector.AsyncVectorEnv( # AsyncVectorEnv or SyncVectorEnv
+    envs = gym.vector.SyncVectorEnv( # AsyncVectorEnv or SyncVectorEnv
         [make_env(args.env_id, i, args.capture_video, run_name, json.loads(args.env_configs)) for i in range(args.num_envs)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
@@ -199,13 +202,16 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
-    for iteration in range(1, args.num_iterations + 1):
+    pbar = tqdm(range(1, args.num_iterations + 1), desc="iteration")
+    for iteration in pbar:
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
+        successes = []
+        returns = []
         for step in range(0, args.num_steps):
             global_step += args.num_envs
             obs[step] = next_obs
@@ -225,15 +231,19 @@ if __name__ == "__main__":
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
 
             if "final_info" in infos:
-                successes = []
                 for info in infos["final_info"]:
                     if info and "episode" in info:
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}, is_success={info.get('is_success', 0)}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                         successes.append(info.get("is_success", 0))
-                if successes:
-                    writer.add_scalar("charts/episodic_success", np.mean(successes), global_step)
+                        returns.append(info["episode"]["r"])
+
+        if returns:
+            successes = np.mean(successes)
+            returns = np.mean(returns)
+            writer.add_scalar("charts/mean_episodic_success", successes, global_step)
+            writer.add_scalar("charts/mean_episodic_return", returns, global_step)
+            pbar.set_postfix_str(f"step={global_step}, return={returns:.2f}, success={successes:.2f}")
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -326,7 +336,6 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
     envs.close()

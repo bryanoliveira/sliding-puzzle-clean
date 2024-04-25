@@ -6,7 +6,7 @@
 #
 # 2. Start training:
 # docker build --build-arg GIT_COMMIT=$(git rev-parse HEAD) --build-arg WANDB_KEY=hash -f Dockerfile -t aluno_bryan-sldp_cleanrl:latest .
-# docker run -it --rm --gpus '"device=0"' --cpus=16.0 --memory=16g -v /raid/bryan/cleanrl/experiments:/sliding-puzzle/experiments -v /raid/bryan/cleanrl/runs:/sliding-puzzle/runs aluno_bryan-sldp_cleanrl
+# docker run -it --rm --gpus '"device=0"' --cpus=16.0 --memory=16g -v /raid/bryan/sliding-puzzle-env:/sldp -v /raid/bryan/cleanrl/experiments:/sliding-puzzle/experiments -v /raid/bryan/cleanrl/runs:/sliding-puzzle/runs aluno_bryan-sldp_cleanrl
 
 # 3. See results:
 # tensorboard --logdir ~/logdir
@@ -45,4 +45,4 @@ WORKDIR /sliding-puzzle
 
 RUN chmod +x /sliding-puzzle/entrypoint.sh
 ENTRYPOINT ["/sliding-puzzle/entrypoint.sh"]
-CMD ["bash experiments/daemon.sh"]
+CMD ["bash", "experiments/daemon.sh"]
