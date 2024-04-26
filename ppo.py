@@ -181,6 +181,7 @@ if __name__ == "__main__":
             sync_tensorboard=True,
             config=vars(args),
             name=run_name,
+            group=args.exp_name,
             monitor_gym=True,
             save_code=True,
         )
