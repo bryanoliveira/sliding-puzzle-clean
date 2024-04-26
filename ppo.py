@@ -82,9 +82,9 @@ class Args:
 
     # to be filled in runtime
     batch_size: int = 0
-    """the batch size (computed in runtime)"""
+    """the batch size (computed in runtime: num_envs * num_steps)"""
     minibatch_size: int = 0
-    """the mini-batch size (computed in runtime)"""
+    """the mini-batch size (computed in runtime: batch_size // num_minibatches)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
@@ -204,7 +204,7 @@ if __name__ == "__main__":
     print(f"device: {device}")
 
     # env setup
-    envs = gym.vector.SyncVectorEnv( # AsyncVectorEnv or SyncVectorEnv
+    envs = gym.vector.SyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, run_name, json.loads(args.env_configs)) for i in range(args.num_envs)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
