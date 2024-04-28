@@ -16,6 +16,7 @@ import tyro
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
+from torchvision import transforms
 
 import sliding_puzzles
 
@@ -88,6 +89,11 @@ class Args:
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
+    backbone: str = "conv"
+    """the backbone of the agent"""
+    backbone_variant: str = "dinov2_vits14"
+    """the backbone variant of the agent"""
+
 
 def make_env(env_id, idx, capture_video, run_name, env_configs):
     def thunk():
@@ -116,21 +122,40 @@ class Permute(nn.Module):
         return x.permute(*self.shape)
 
 class Agent(nn.Module):
-    def __init__(self, envs, hidden_size, hidden_layers):
+    def __init__(self, envs, hidden_size, hidden_layers, backbone="conv", backbone_variant="dinov2_vits14"):
         super().__init__()
         if envs.single_observation_space.shape[-1] == 3 or envs.single_observation_space.shape[0] == 3:
-            self.encoder = nn.Sequential(
-                Permute(0, 3, 1, 2),
-                layer_init(nn.Conv2d(3, 32, 8, stride=4)),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(32, 64, 4, stride=2)),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(64, 64, 3, stride=1)),
-                nn.ReLU(),
-                nn.Flatten(),
-                layer_init(nn.Linear(64 * 7 * 7, hidden_size)),
-                nn.Tanh(),
-            )
+            if backbone == "conv":
+                self.encoder = nn.Sequential(
+                    Permute(0, 3, 1, 2),
+                    layer_init(nn.Conv2d(3, 32, 8, stride=4)),
+                    nn.ReLU(),
+                    layer_init(nn.Conv2d(32, 64, 4, stride=2)),
+                    nn.ReLU(),
+                    layer_init(nn.Conv2d(64, 64, 3, stride=1)),
+                    nn.ReLU(),
+                    nn.Flatten(),
+                    layer_init(nn.Linear(64 * 7 * 7, hidden_size)),
+                    nn.Tanh(),
+                )
+            elif backbone == "dino":
+                dino = torch.hub.load("facebookresearch/dinov2", backbone_variant)
+                self.encoder = nn.Sequential(
+                    Permute(0, 3, 1, 2),
+                    transforms.Resize(
+                        (84, 84),
+                        interpolation=transforms.InterpolationMode.BICUBIC,
+                        antialias=True,
+                    ),
+                    # ImageNet statistics
+                    transforms.Normalize(
+                        mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)
+                    ),
+                    dino,
+                    nn.Tanh(),
+                    nn.Linear(dino.embed_dim, hidden_size),
+                    nn.Tanh(),
+                )
         else:
             self.encoder = nn.Sequential(
                 layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), hidden_size)),
@@ -209,7 +234,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    agent = Agent(envs, args.hidden_size, args.hidden_layers).to(device)
+    agent = Agent(envs, args.hidden_size, args.hidden_layers, args.backbone, args.backbone_variant).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
     print(agent)
 
