@@ -93,6 +93,8 @@ class Args:
     """the backbone of the agent"""
     backbone_variant: str = "dinov2_vits14"
     """the backbone variant of the agent"""
+    backbone_perc_unfrozen: float = 0
+    """the percentage of the backbone to be unfrozen"""
 
 
 def make_env(env_id, idx, capture_video, run_name, env_configs):
@@ -122,7 +124,7 @@ class Permute(nn.Module):
         return x.permute(*self.shape)
 
 class Agent(nn.Module):
-    def __init__(self, envs, hidden_size, hidden_layers, backbone="conv", backbone_variant="dinov2_vits14"):
+    def __init__(self, envs, hidden_size, hidden_layers, backbone="conv", backbone_variant="dinov2_vits14", backbone_perc_unfrozen=0):
         super().__init__()
         if envs.single_observation_space.shape[-1] == 3 or envs.single_observation_space.shape[0] == 3:
             if backbone == "conv":
@@ -140,6 +142,12 @@ class Agent(nn.Module):
                 )
             elif backbone == "dino":
                 dino = torch.hub.load("facebookresearch/dinov2", backbone_variant)
+                layers = list(dino.parameters())
+                unfrozen_layers = int(len(layers) * backbone_perc_unfrozen)
+                print(f"Unfreezing {unfrozen_layers} out of {len(layers)} Dino layers")
+                for i, p in enumerate(layers):
+                    p.requires_grad_(p.requires_grad and (i >= len(layers) - unfrozen_layers))
+
                 self.encoder = nn.Sequential(
                     Permute(0, 3, 1, 2),
                     transforms.Resize(
@@ -234,7 +242,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    agent = Agent(envs, args.hidden_size, args.hidden_layers, args.backbone, args.backbone_variant).to(device)
+    agent = Agent(envs, args.hidden_size, args.hidden_layers, args.backbone, args.backbone_variant, args.backbone_perc_unfrozen).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
     print(agent)
 
