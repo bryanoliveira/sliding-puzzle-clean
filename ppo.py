@@ -32,7 +32,7 @@ class Args:
     """if toggled, cuda will be enabled by default"""
     track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "sldp-cleanrl"
+    wandb_project_name: str = "cleanrl"
     """the wandb's project name"""
     wandb_entity: str = "bryanoliveira"
     """the entity (team) of wandb's project"""
@@ -41,7 +41,7 @@ class Args:
 
     # Algorithm specific arguments
     env_id: str = "SlidingPuzzle-v0"
-    env_configs: str = '{"w": 3, "variation": "onehot"}'
+    env_configs: str = None
     """the id of the environment"""
     total_timesteps: int = 3000000
     """total timesteps of the experiments"""
@@ -96,6 +96,10 @@ class Args:
     backbone_perc_unfrozen: float = 0
     """the percentage of the backbone to be unfrozen"""
 
+    checkpoint_load_path: str = None
+    """the path to the checkpoint to load"""
+    checkpoint_every: int = 10
+
 
 def make_env(env_id, idx, capture_video, run_name, env_configs):
     def thunk():
@@ -130,6 +134,11 @@ class Agent(nn.Module):
             if backbone == "conv":
                 self.encoder = nn.Sequential(
                     Permute(0, 3, 1, 2),
+                    transforms.Resize(
+                        (84, 84),
+                        interpolation=transforms.InterpolationMode.BICUBIC,
+                        antialias=True,
+                    ),
                     layer_init(nn.Conv2d(3, 32, 8, stride=4)),
                     nn.ReLU(),
                     layer_init(nn.Conv2d(32, 64, 4, stride=2)),
@@ -198,12 +207,34 @@ class Agent(nn.Module):
         return action, probs.log_prob(action), probs.entropy(), self.critic(x)
 
 
+def save_checkpoint(agent, optimizer, global_step, run_name):
+    checkpoint_path = f"runs/{run_name}/checkpoint_{global_step}.pth"
+    torch.save({
+        'agent_state_dict': agent.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'global_step': global_step,
+    }, checkpoint_path)
+    print(f"Checkpoint saved at {checkpoint_path}")
+
+def load_checkpoint(agent, optimizer, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path)
+    agent.load_state_dict(checkpoint['agent_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    global_step = checkpoint['global_step']
+    print(f"Checkpoint loaded from {checkpoint_path}")
+    return global_step
+
+
 if __name__ == "__main__":
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
-    args.exp_name += "_" + args.env_configs.replace("{", "").replace("}", "").replace(":", "_").replace(",", "_").replace(" ", "").replace('"', "")
+    args.exp_name += "_" + args.env_id.replace("/", "").replace("-", "").lower()
+    if args.env_configs:
+        args.exp_name += "_" + args.env_configs.replace("{", "").replace("}", "").replace(":", "_").replace(",", "_").replace(" ", "").replace('"', "")
+    if args.backbone != "conv":
+        args.exp_name += "_" + args.backbone
     run_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}-{args.exp_name}_{args.seed}"
     if args.track:
         import wandb
@@ -237,8 +268,9 @@ if __name__ == "__main__":
     print(f"device: {device}")
 
     # env setup
+    env_configs = json.loads(args.env_configs) if args.env_configs else {}
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name, json.loads(args.env_configs)) for i in range(args.num_envs)],
+        [make_env(args.env_id, i, args.capture_video, run_name, env_configs) for i in range(args.num_envs)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
@@ -260,6 +292,12 @@ if __name__ == "__main__":
     next_obs, _ = envs.reset(seed=args.seed)
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
+
+
+    if args.checkpoint_load_path:
+        global_step = load_checkpoint(agent, optimizer, args.checkpoint_load_path)
+    else:
+        save_checkpoint(agent, optimizer, global_step, run_name)
 
     pbar = tqdm(range(1, args.num_iterations + 1), desc="iteration")
     for iteration in pbar:
@@ -396,6 +434,9 @@ if __name__ == "__main__":
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+
+        if iteration % args.checkpoint_every == 0:
+            save_checkpoint(agent, optimizer, global_step, run_name)
 
     envs.close()
     writer.close()
