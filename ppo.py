@@ -87,7 +87,7 @@ class Args:
     """the agent hidden size"""
     hidden_size: int = 512
     """the number of hidden layers"""
-    hidden_layers: int = 2
+    hidden_layers: int = 1
 
     # to be filled in runtime
     batch_size: int = 0
@@ -117,8 +117,9 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
         else:
             env = gym.make(env_id, **env_configs)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        # check if is atari
-        env = gym.wrappers.ResizeObservation(env, (84, 84))
+        img_obs = min(env.observation_space.shape[-1], env.observation_space.shape[0]) in (3, 4)
+        if img_obs:
+            env = gym.wrappers.ResizeObservation(env, (84, 84))
         if "ALE" in env_id:
             env = NoopResetEnv(env, noop_max=30)
             env = MaxAndSkipEnv(env, skip=4)
@@ -126,7 +127,8 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
             if "FIRE" in env.unwrapped.get_action_meanings():
                 env = FireResetEnv(env)
             env = ClipRewardEnv(env)
-            env = gym.wrappers.GrayScaleObservation(env)
+            if img_obs:
+                env = gym.wrappers.GrayScaleObservation(env)
             env = gym.wrappers.FrameStack(env, 4)
         return env
 
@@ -141,7 +143,11 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     def __init__(self, envs, hidden_size, hidden_layers, backbone="conv", backbone_variant="dinov2_vits14", backbone_perc_unfrozen=0):
         super().__init__()
-        if min(envs.single_observation_space.shape[-1], envs.single_observation_space.shape[0]) in (3, 4):
+        img_obs = (
+            min(envs.single_observation_space.shape[-1], envs.single_observation_space.shape[0]) in (3, 4)
+            and "-ram-" not in envs.envs[0].spec.id
+        )
+        if img_obs:
             inchannels = min(envs.single_observation_space.shape[-1], envs.single_observation_space.shape[0])
             if backbone == "conv":
                 self.encoder = nn.Sequential(
@@ -176,6 +182,7 @@ class Agent(nn.Module):
                 )
         else:
             self.encoder = nn.Sequential(
+                nn.Flatten(start_dim=1),
                 layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), hidden_size)),
                 nn.Tanh(),
             )
