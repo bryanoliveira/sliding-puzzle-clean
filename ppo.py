@@ -18,6 +18,14 @@ from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 from torchvision import transforms
 
+from stable_baselines3.common.atari_wrappers import (  # isort:skip
+    ClipRewardEnv,
+    EpisodicLifeEnv,
+    FireResetEnv,
+    MaxAndSkipEnv,
+    NoopResetEnv,
+)
+
 import sliding_puzzles
 
 @dataclass
@@ -109,6 +117,17 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
         else:
             env = gym.make(env_id, **env_configs)
         env = gym.wrappers.RecordEpisodeStatistics(env)
+        # check if is atari
+        env = gym.wrappers.ResizeObservation(env, (84, 84))
+        if "ALE" in env_id:
+            env = NoopResetEnv(env, noop_max=30)
+            env = MaxAndSkipEnv(env, skip=4)
+            env = EpisodicLifeEnv(env)
+            if "FIRE" in env.unwrapped.get_action_meanings():
+                env = FireResetEnv(env)
+            env = ClipRewardEnv(env)
+            env = gym.wrappers.GrayScaleObservation(env)
+            env = gym.wrappers.FrameStack(env, 4)
         return env
 
     return thunk
@@ -119,27 +138,14 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
-class Permute(nn.Module):
-    def __init__(self, *shape):
-        super().__init__()
-        self.shape = shape
-
-    def forward(self, x):
-        return x.permute(*self.shape)
-
 class Agent(nn.Module):
     def __init__(self, envs, hidden_size, hidden_layers, backbone="conv", backbone_variant="dinov2_vits14", backbone_perc_unfrozen=0):
         super().__init__()
-        if envs.single_observation_space.shape[-1] == 3 or envs.single_observation_space.shape[0] == 3:
+        if min(envs.single_observation_space.shape[-1], envs.single_observation_space.shape[0]) in (3, 4):
+            inchannels = min(envs.single_observation_space.shape[-1], envs.single_observation_space.shape[0])
             if backbone == "conv":
                 self.encoder = nn.Sequential(
-                    Permute(0, 3, 1, 2),
-                    transforms.Resize(
-                        (84, 84),
-                        interpolation=transforms.InterpolationMode.BICUBIC,
-                        antialias=True,
-                    ),
-                    layer_init(nn.Conv2d(3, 32, 8, stride=4)),
+                    layer_init(nn.Conv2d(inchannels, 32, 8, stride=4)),
                     nn.ReLU(),
                     layer_init(nn.Conv2d(32, 64, 4, stride=2)),
                     nn.ReLU(),
@@ -150,6 +156,7 @@ class Agent(nn.Module):
                     nn.Tanh(),
                 )
             elif backbone == "dino":
+                # TODO dino doesn't work with framestack
                 dino = torch.hub.load("facebookresearch/dinov2", backbone_variant)
                 layers = list(dino.parameters())
                 unfrozen_layers = int(len(layers) * backbone_perc_unfrozen)
@@ -158,12 +165,6 @@ class Agent(nn.Module):
                     p.requires_grad_(p.requires_grad and (i >= len(layers) - unfrozen_layers))
 
                 self.encoder = nn.Sequential(
-                    Permute(0, 3, 1, 2),
-                    transforms.Resize(
-                        (84, 84),
-                        interpolation=transforms.InterpolationMode.BICUBIC,
-                        antialias=True,
-                    ),
                     # ImageNet statistics
                     transforms.Normalize(
                         mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)
