@@ -31,7 +31,7 @@ ENV NUMBA_CACHE_DIR=/tmp
 
 COPY requirements.txt requirements.txt
 RUN pip3 install -r requirements.txt
-RUN pip install ale_py autorom[accept-rom-license]
+RUN pip install "gymnasium[atari, accept-rom-license]"
 
 ARG GIT_COMMIT
 ENV GIT_COMMIT=$GIT_COMMIT
