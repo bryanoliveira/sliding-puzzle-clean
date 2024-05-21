@@ -38,40 +38,40 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = True
+    track: bool = False
     """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "cleanrl"
     """the wandb's project name"""
     wandb_entity: str = "bryanoliveira"
     """the entity (team) of wandb's project"""
-    capture_video: bool = True
+    capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
     env_id: str = "SlidingPuzzle-v0"
     env_configs: str = None
     """the id of the environment"""
-    total_timesteps: int = 3000000
+    total_timesteps: int = 10000000
     """total timesteps of the experiments"""
-    learning_rate: float = 5e-4
+    learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 64
+    num_envs: int = 8
     """the number of parallel game environments"""
-    num_steps: int = 256
+    num_steps: int = 128
     """the number of steps to run in each environment per policy rollout"""
-    anneal_lr: bool = False
+    anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
     gamma: float = 0.99
     """the discount factor gamma"""
     gae_lambda: float = 0.95
     """the lambda for the general advantage estimation"""
-    num_minibatches: int = 8
+    num_minibatches: int = 4
     """the number of mini-batches"""
-    update_epochs: int = 8
+    update_epochs: int = 4
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.2
+    clip_coef: float = 0.1
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
@@ -106,7 +106,7 @@ class Args:
 
     checkpoint_load_path: str = None
     """the path to the checkpoint to load"""
-    checkpoint_every: int = 10
+    checkpoint_every: int = 100
 
 
 def make_env(env_id, idx, capture_video, run_name, env_configs):
