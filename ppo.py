@@ -127,7 +127,7 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
             if "FIRE" in env.unwrapped.get_action_meanings():
                 env = FireResetEnv(env)
             env = ClipRewardEnv(env)
-            if img_obs:
+            if img_obs and args.backbone == "conv":
                 env = gym.wrappers.GrayScaleObservation(env)
             env = gym.wrappers.FrameStack(env, 4)
         return env
@@ -145,13 +145,12 @@ class Agent(nn.Module):
         super().__init__()
         img_obs = (
             min(envs.single_observation_space.shape[-1], envs.single_observation_space.shape[0]) in (3, 4)
-            and "-ram-" not in envs.envs[0].spec.id
+            and "-ram" not in envs.envs[0].spec.id
         )
         if img_obs:
-            inchannels = min(envs.single_observation_space.shape[-1], envs.single_observation_space.shape[0])
             if backbone == "conv":
                 self.encoder = nn.Sequential(
-                    layer_init(nn.Conv2d(inchannels, 32, 8, stride=4)),
+                    layer_init(nn.Conv2d(envs.single_observation_space.shape[0], 32, 8, stride=4)),
                     nn.ReLU(),
                     layer_init(nn.Conv2d(32, 64, 4, stride=2)),
                     nn.ReLU(),
@@ -162,24 +161,34 @@ class Agent(nn.Module):
                     nn.Tanh(),
                 )
             elif backbone == "dino":
-                # TODO dino doesn't work with framestack
-                dino = torch.hub.load("facebookresearch/dinov2", backbone_variant)
-                layers = list(dino.parameters())
+                self.dino = torch.hub.load("facebookresearch/dinov2", backbone_variant)
+                layers = list(self.dino.parameters())
                 unfrozen_layers = int(len(layers) * backbone_perc_unfrozen)
                 print(f"Unfreezing {unfrozen_layers} out of {len(layers)} Dino layers")
                 for i, p in enumerate(layers):
                     p.requires_grad_(p.requires_grad and (i >= len(layers) - unfrozen_layers))
 
-                self.encoder = nn.Sequential(
-                    # ImageNet statistics
+                self.dino_transforms = transforms.Compose([
+                    transforms.Lambda(lambda x: x.permute(0, 3, 1, 2) / 255.0),  # Change(B, H, W, C) to (B, C, H, W)
                     transforms.Normalize(
                         mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)
                     ),
-                    dino,
+                ])
+
+                self.dino_linear = nn.Sequential(
                     nn.Tanh(),
-                    nn.Linear(dino.embed_dim, hidden_size),
+                    nn.Linear(
+                        self.dino.embed_dim * (
+                            envs.single_observation_space.shape[0] 
+                            if len(envs.single_observation_space.shape) == 4 
+                            else 1
+                        ),
+                        hidden_size,
+                    ),
                     nn.Tanh(),
                 )
+                
+                self.encoder = self.encode_dino
         else:
             self.encoder = nn.Sequential(
                 nn.Flatten(start_dim=1),
@@ -201,6 +210,19 @@ class Agent(nn.Module):
             ] * hidden_layers,
             layer_init(nn.Linear(hidden_size, envs.single_action_space.n), std=0.01),
         )
+
+    def encode_dino(self, x):
+        if len(x.shape) == 5:
+            batch_size, frame_stack, w, h, c = x.shape
+            x = x.view(batch_size * frame_stack, w, h, c)
+        else:
+            batch_size = x.shape[0]
+        x = self.dino_transforms(x)
+        x = self.dino(x)
+        x = x.reshape(batch_size, frame_stack, -1)
+        x = x.reshape(batch_size, -1)
+        x = self.dino_linear(x)
+        return x
 
     def get_value(self, x):
         x = self.encoder(x)
