@@ -120,7 +120,7 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
         img_obs = min(env.observation_space.shape[-1], env.observation_space.shape[0]) in (3, 4)
         if img_obs:
             env = gym.wrappers.ResizeObservation(env, (84, 84))
-        if "ALE" in env_id:
+        if "ALE" in env_id or "NoFrameskip" in env_id:
             env = NoopResetEnv(env, noop_max=30)
             env = MaxAndSkipEnv(env, skip=4)
             env = EpisodicLifeEnv(env)
@@ -212,14 +212,16 @@ class Agent(nn.Module):
         )
 
     def encode_dino(self, x):
-        if len(x.shape) == 5:
+        frame_stacked = len(x.shape) == 5
+        if frame_stacked:
             batch_size, frame_stack, w, h, c = x.shape
             x = x.view(batch_size * frame_stack, w, h, c)
         else:
             batch_size = x.shape[0]
         x = self.dino_transforms(x)
         x = self.dino(x)
-        x = x.reshape(batch_size, frame_stack, -1)
+        if frame_stacked:
+            x = x.reshape(batch_size, frame_stack, -1)
         x = x.reshape(batch_size, -1)
         x = self.dino_linear(x)
         return x
