@@ -106,7 +106,7 @@ class Args:
 
     checkpoint_load_path: str = None
     """the path to the checkpoint to load"""
-    checkpoint_every: int = 100
+    checkpoint_every: int = 100000
 
 
 def make_env(env_id, idx, capture_video, run_name, env_configs):
