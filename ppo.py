@@ -87,7 +87,7 @@ class Args:
     """the agent hidden size"""
     hidden_size: int = 512
     """the number of hidden layers"""
-    hidden_layers: int = 1
+    hidden_layers: int = 0
 
     # to be filled in runtime
     batch_size: int = 0
@@ -118,8 +118,6 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
             env = gym.make(env_id, **env_configs)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         img_obs = min(env.observation_space.shape[-1], env.observation_space.shape[0]) in (3, 4)
-        if img_obs:
-            env = gym.wrappers.ResizeObservation(env, (84, 84))
         if "ALE" in env_id or "NoFrameskip" in env_id:
             env = NoopResetEnv(env, noop_max=30)
             env = MaxAndSkipEnv(env, skip=4)
@@ -127,9 +125,13 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
             if "FIRE" in env.unwrapped.get_action_meanings():
                 env = FireResetEnv(env)
             env = ClipRewardEnv(env)
-            if img_obs and args.backbone == "conv":
-                env = gym.wrappers.GrayScaleObservation(env)
+            if img_obs:
+                env = gym.wrappers.ResizeObservation(env, (84, 84))
+                if args.backbone == "conv":
+                    env = gym.wrappers.GrayScaleObservation(env)
             env = gym.wrappers.FrameStack(env, 4)
+        elif img_obs:
+            env = gym.wrappers.ResizeObservation(env, (84, 84))
         return env
 
     return thunk
@@ -158,7 +160,7 @@ class Agent(nn.Module):
                     nn.ReLU(),
                     nn.Flatten(),
                     layer_init(nn.Linear(64 * 7 * 7, hidden_size)),
-                    nn.Tanh(),
+                    nn.ReLU(),
                 )
             elif backbone == "dino":
                 self.dino = torch.hub.load("facebookresearch/dinov2", backbone_variant)
@@ -176,7 +178,7 @@ class Agent(nn.Module):
                 ])
 
                 self.dino_linear = nn.Sequential(
-                    nn.Tanh(),
+                    nn.ReLU(),
                     nn.Linear(
                         self.dino.embed_dim * (
                             envs.single_observation_space.shape[0] 
@@ -185,7 +187,7 @@ class Agent(nn.Module):
                         ),
                         hidden_size,
                     ),
-                    nn.Tanh(),
+                    nn.ReLU(),
                 )
                 
                 self.encoder = self.encode_dino
@@ -193,20 +195,20 @@ class Agent(nn.Module):
             self.encoder = nn.Sequential(
                 nn.Flatten(start_dim=1),
                 layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), hidden_size)),
-                nn.Tanh(),
+                nn.ReLU(),
             )
 
         self.critic = nn.Sequential(
             *[
                 layer_init(nn.Linear(hidden_size, hidden_size)),
-                nn.Tanh(),
+                nn.ReLU(),
             ] * hidden_layers,
             layer_init(nn.Linear(hidden_size, 1), std=1.0),
         )
         self.actor = nn.Sequential(
             *[
                 layer_init(nn.Linear(hidden_size, hidden_size)),
-                nn.Tanh(),
+                nn.ReLU(),
             ] * hidden_layers,
             layer_init(nn.Linear(hidden_size, envs.single_action_space.n), std=0.01),
         )
