@@ -3,6 +3,7 @@ import datetime
 import json
 import os
 import random
+import re
 import time
 from dataclasses import dataclass
 import yaml
@@ -27,6 +28,7 @@ from stable_baselines3.common.atari_wrappers import (  # isort:skip
 )
 
 import sliding_puzzles
+import wrappers
 
 @dataclass
 class Args:
@@ -106,6 +108,8 @@ class Args:
 
     checkpoint_load_path: str = None
     """the path to the checkpoint to load"""
+    checkpoint_param_filter: str = ".*"
+    """the filter to load checkpoint parameters"""
     checkpoint_every: int = 10000
 
 
@@ -132,6 +136,7 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
             env = gym.wrappers.FrameStack(env, 4)
         elif img_obs:
             env = gym.wrappers.ResizeObservation(env, (84, 84))
+            env = wrappers.ChannelFirstImageWrapper(env)
         return env
 
     return thunk
@@ -250,13 +255,21 @@ def save_checkpoint(agent, optimizer, global_step, run_name):
     }, checkpoint_path)
     print(f"Checkpoint saved at {checkpoint_path}")
 
-def load_checkpoint(agent, optimizer, checkpoint_path):
+def load_checkpoint(agent, optimizer, checkpoint_path, param_filter):
+    print(f"Loading checkpoint from {checkpoint_path}")
     checkpoint = torch.load(checkpoint_path)
-    agent.load_state_dict(checkpoint['agent_state_dict'])
     optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-    global_step = checkpoint['global_step']
-    print(f"Checkpoint loaded from {checkpoint_path}")
-    return global_step
+
+    regex = re.compile(param_filter)
+    filtered_state_dict = {k: v for k, v in checkpoint['agent_state_dict'].items() if regex.match(k)}
+    agent_state_dict = agent.state_dict()
+    agent_state_dict.update(filtered_state_dict)
+    agent.load_state_dict(agent_state_dict)
+    if len(filtered_state_dict) == len(checkpoint['agent_state_dict']):
+        return checkpoint['global_step']
+    else:
+        print("Loaded params: ", filtered_state_dict.keys())
+        return 0
 
 
 if __name__ == "__main__":
@@ -329,7 +342,7 @@ if __name__ == "__main__":
 
 
     if args.checkpoint_load_path:
-        global_step = load_checkpoint(agent, optimizer, args.checkpoint_load_path)
+        global_step = load_checkpoint(agent, optimizer, args.checkpoint_load_path, args.checkpoint_param_filter)
     else:
         save_checkpoint(agent, optimizer, global_step, run_name)
 
