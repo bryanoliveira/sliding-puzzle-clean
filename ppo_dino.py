@@ -99,6 +99,11 @@ class Args:
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
+    backbone_variant: str = "dinov2_vits14"
+    """the backbone variant of the agent"""
+    backbone_perc_unfrozen: float = 0
+    """the percentage of the backbone to be unfrozen"""
+
     checkpoint_load_path: str = None
     """the path to the checkpoint to load"""
     checkpoint_param_filter: str = ".*"
@@ -114,10 +119,7 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
         else:
             env = gym.make(env_id, **env_configs)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        img_obs = (
-            min(env.observation_space.shape[-1], env.observation_space.shape[0]) in (3, 4)
-            and "-ram" not in env.spec.id
-        )
+        img_obs = min(env.observation_space.shape[-1], env.observation_space.shape[0]) in (3, 4)
         if "ALE" in env_id or "NoFrameskip" in env_id:
             env = NoopResetEnv(env, noop_max=30)
             env = MaxAndSkipEnv(env, skip=4)
@@ -127,7 +129,6 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
             env = ClipRewardEnv(env)
             if img_obs:
                 env = gym.wrappers.ResizeObservation(env, (84, 84))
-                env = gym.wrappers.GrayScaleObservation(env)
             env = gym.wrappers.FrameStack(env, 4)
         elif img_obs:
             env = gym.wrappers.ResizeObservation(env, (84, 84))
@@ -144,30 +145,37 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 class Agent(nn.Module):
-    def __init__(self, envs, hidden_size, hidden_layers):
+    def __init__(self, envs, hidden_size, hidden_layers, backbone_variant="dinov2_vits14", backbone_perc_unfrozen=0):
         super().__init__()
-        img_obs = (
-            min(envs.single_observation_space.shape[-1], envs.single_observation_space.shape[0]) in (3, 4)
-            and "-ram" not in envs.envs[0].spec.id
+        # configure backbone
+        self.dino = torch.hub.load("facebookresearch/dinov2", backbone_variant)
+        layers = list(self.dino.parameters())
+        unfrozen_layers = int(len(layers) * backbone_perc_unfrozen)
+        print(f"Unfreezing {unfrozen_layers} out of {len(layers)} Dino layers")
+        for i, p in enumerate(layers):
+            p.requires_grad_(p.requires_grad and (i >= len(layers) - unfrozen_layers))
+
+        # configure transforms
+        self.dino_transforms = transforms.Compose([
+            transforms.Lambda(lambda x: x.permute(0, 3, 1, 2) / 255.0),  # Change(B, H, W, C) to (B, C, H, W)
+            transforms.Normalize(
+                mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)
+            ),
+        ])
+
+        # convert possibly stacked images to a single linear layer
+        self.dino_linear = nn.Sequential(
+            nn.ReLU(),
+            nn.Linear(
+                self.dino.embed_dim * (
+                    envs.single_observation_space.shape[0] 
+                    if len(envs.single_observation_space.shape) == 4 
+                    else 1
+                ),
+                hidden_size,
+            ),
+            nn.ReLU(),
         )
-        if img_obs:
-            self.encoder = nn.Sequential(
-                layer_init(nn.Conv2d(envs.single_observation_space.shape[0], 32, 8, stride=4)),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(32, 64, 4, stride=2)),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(64, 64, 3, stride=1)),
-                nn.ReLU(),
-                nn.Flatten(),
-                layer_init(nn.Linear(64 * 7 * 7, hidden_size)),
-                nn.ReLU(),
-            )
-        else:
-            self.encoder = nn.Sequential(
-                nn.Flatten(start_dim=1),
-                layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), hidden_size)),
-                nn.ReLU(),
-            )
 
         self.critic = nn.Sequential(
             *[
@@ -183,6 +191,21 @@ class Agent(nn.Module):
             ] * hidden_layers,
             layer_init(nn.Linear(hidden_size, envs.single_action_space.n), std=0.01),
         )
+
+    def encoder(self, x):
+        frame_stacked = len(x.shape) == 5
+        if frame_stacked:
+            batch_size, frame_stack, w, h, c = x.shape
+            x = x.view(batch_size * frame_stack, w, h, c)
+        else:
+            batch_size = x.shape[0]
+        x = self.dino_transforms(x)
+        x = self.dino(x)
+        if frame_stacked:
+            x = x.reshape(batch_size, frame_stack, -1)
+        x = x.reshape(batch_size, -1)
+        x = self.dino_linear(x)
+        return x
 
     def get_value(self, x):
         x = self.encoder(x)
@@ -270,7 +293,7 @@ if __name__ == "__main__":
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    agent = Agent(envs, args.hidden_size, args.hidden_layers).to(device)
+    agent = Agent(envs, args.hidden_size, args.hidden_layers, args.backbone_variant, args.backbone_perc_unfrozen).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
     print(agent)
 

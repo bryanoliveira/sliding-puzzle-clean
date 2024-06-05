@@ -1,9 +1,7 @@
-# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
-import datetime
-import json
+# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppo_ataripy
+from datetime import datetime
 import os
 import random
-import re
 import time
 from dataclasses import dataclass
 import yaml
@@ -16,8 +14,8 @@ import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
 from torch.utils.tensorboard import SummaryWriter
+
 from tqdm import tqdm
-from torchvision import transforms
 
 from stable_baselines3.common.atari_wrappers import (  # isort:skip
     ClipRewardEnv,
@@ -27,8 +25,6 @@ from stable_baselines3.common.atari_wrappers import (  # isort:skip
     NoopResetEnv,
 )
 
-import sliding_puzzles
-import wrappers
 
 @dataclass
 class Args:
@@ -40,19 +36,19 @@ class Args:
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
     """if toggled, cuda will be enabled by default"""
-    track: bool = False
+    track: bool = True
     """if toggled, this experiment will be tracked with Weights and Biases"""
-    wandb_project_name: str = "cleanrl"
+    wandb_project_name: str = "cleanRL"
     """the wandb's project name"""
-    wandb_entity: str = "bryanoliveira"
+    wandb_entity: str = None
     """the entity (team) of wandb's project"""
     capture_video: bool = False
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "SlidingPuzzle-v0"
-    env_configs: str = None
+    env_id: str = "BreakoutNoFrameskip-v4"
     """the id of the environment"""
+    env_configs: str = None # '{"frameskip": 1, "repeat_action_probability": 0}'
     total_timesteps: int = 10000000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
@@ -86,53 +82,36 @@ class Args:
     target_kl: float = None
     """the target KL divergence threshold"""
 
-    """the agent hidden size"""
-    hidden_size: int = 512
-    """the number of hidden layers"""
-    hidden_layers: int = 0
-
     # to be filled in runtime
     batch_size: int = 0
-    """the batch size (computed in runtime: num_envs * num_steps)"""
+    """the batch size (computed in runtime)"""
     minibatch_size: int = 0
-    """the mini-batch size (computed in runtime: batch_size // num_minibatches)"""
+    """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
     checkpoint_load_path: str = None
     """the path to the checkpoint to load"""
-    checkpoint_param_filter: str = ".*"
-    """the filter to load checkpoint parameters"""
-    checkpoint_every: int = 10000
+    checkpoint_every: int = 100
 
 
-def make_env(env_id, idx, capture_video, run_name, env_configs):
+def make_env(env_id, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
-            env = gym.make(env_id, render_mode="rgb_array", **env_configs)
-            env = gym.wrappers.RecordVideo(env, f"runs/{run_name}/videos")
+            env = gym.make(env_id, render_mode="rgb_array")
+            env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
         else:
-            env = gym.make(env_id, **env_configs)
+            env = gym.make(env_id)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        img_obs = (
-            min(env.observation_space.shape[-1], env.observation_space.shape[0]) in (3, 4)
-            and "-ram" not in env.spec.id
-        )
-        if "ALE" in env_id or "NoFrameskip" in env_id:
-            env = NoopResetEnv(env, noop_max=30)
-            env = MaxAndSkipEnv(env, skip=4)
-            env = EpisodicLifeEnv(env)
-            if "FIRE" in env.unwrapped.get_action_meanings():
-                env = FireResetEnv(env)
-            env = ClipRewardEnv(env)
-            if img_obs:
-                env = gym.wrappers.ResizeObservation(env, (84, 84))
-                env = gym.wrappers.GrayScaleObservation(env)
-            env = gym.wrappers.FrameStack(env, 4)
-        elif img_obs:
-            env = gym.wrappers.ResizeObservation(env, (84, 84))
-            env = wrappers.ChannelFirstImageWrapper(env)
-            env = wrappers.NormalizedImageWrapper(env)
+        env = NoopResetEnv(env, noop_max=30)
+        env = MaxAndSkipEnv(env, skip=4)
+        env = EpisodicLifeEnv(env)
+        if "FIRE" in env.unwrapped.get_action_meanings():
+            env = FireResetEnv(env)
+        env = ClipRewardEnv(env)
+        env = gym.wrappers.ResizeObservation(env, (84, 84))
+        env = gym.wrappers.GrayScaleObservation(env)
+        env = gym.wrappers.FrameStack(env, 4)
         return env
 
     return thunk
@@ -143,59 +122,42 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     torch.nn.init.constant_(layer.bias, bias_const)
     return layer
 
-class Agent(nn.Module):
-    def __init__(self, envs, hidden_size, hidden_layers):
-        super().__init__()
-        img_obs = (
-            min(envs.single_observation_space.shape[-1], envs.single_observation_space.shape[0]) in (3, 4)
-            and "-ram" not in envs.envs[0].spec.id
-        )
-        if img_obs:
-            self.encoder = nn.Sequential(
-                layer_init(nn.Conv2d(envs.single_observation_space.shape[0], 32, 8, stride=4)),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(32, 64, 4, stride=2)),
-                nn.ReLU(),
-                layer_init(nn.Conv2d(64, 64, 3, stride=1)),
-                nn.ReLU(),
-                nn.Flatten(),
-                layer_init(nn.Linear(64 * 7 * 7, hidden_size)),
-                nn.ReLU(),
-            )
-        else:
-            self.encoder = nn.Sequential(
-                nn.Flatten(start_dim=1),
-                layer_init(nn.Linear(np.array(envs.single_observation_space.shape).prod(), hidden_size)),
-                nn.ReLU(),
-            )
 
-        self.critic = nn.Sequential(
-            *[
-                layer_init(nn.Linear(hidden_size, hidden_size)),
-                nn.ReLU(),
-            ] * hidden_layers,
-            layer_init(nn.Linear(hidden_size, 1), std=1.0),
+class Agent(nn.Module):
+    def __init__(self, envs):
+        super().__init__()
+        self.network = nn.Sequential(
+            layer_init(nn.Conv2d(4, 32, 8, stride=4)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(32, 64, 4, stride=2)),
+            nn.ReLU(),
+            layer_init(nn.Conv2d(64, 64, 3, stride=1)),
+            nn.ReLU(),
+            nn.Flatten(),
+            layer_init(nn.Linear(64 * 7 * 7, 512)),
+            nn.ReLU(),
         )
-        self.actor = nn.Sequential(
-            *[
-                layer_init(nn.Linear(hidden_size, hidden_size)),
-                nn.ReLU(),
-            ] * hidden_layers,
-            layer_init(nn.Linear(hidden_size, envs.single_action_space.n), std=0.01),
-        )
+        self.actor = layer_init(nn.Linear(512, envs.single_action_space.n), std=0.01)
+        self.critic = layer_init(nn.Linear(512, 1), std=1)
 
     def get_value(self, x):
-        x = self.encoder(x)
-        return self.critic(x)
+        return self.critic(self.network(x / 255.0))
 
     def get_action_and_value(self, x, action=None):
-        x = self.encoder(x)
-        logits = self.actor(x)
+        hidden = self.network(x / 255.0)
+        logits = self.actor(hidden)
         probs = Categorical(logits=logits)
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(x)
+        return action, probs.log_prob(action), probs.entropy(), self.critic(hidden)
 
+def load_checkpoint(agent, optimizer, checkpoint_path):
+    checkpoint = torch.load(checkpoint_path)
+    agent.load_state_dict(checkpoint['agent_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    global_step = checkpoint['global_step']
+    print(f"Checkpoint loaded from {checkpoint_path}")
+    return global_step
 
 def save_checkpoint(agent, optimizer, global_step, run_name):
     checkpoint_path = f"runs/{run_name}/checkpoint_{global_step}.pth"
@@ -206,22 +168,6 @@ def save_checkpoint(agent, optimizer, global_step, run_name):
     }, checkpoint_path)
     print(f"Checkpoint saved at {checkpoint_path}")
 
-def load_checkpoint(agent, optimizer, checkpoint_path, param_filter):
-    print(f"Loading checkpoint from {checkpoint_path}")
-    checkpoint = torch.load(checkpoint_path)
-    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-
-    regex = re.compile(param_filter)
-    filtered_state_dict = {k: v for k, v in checkpoint['agent_state_dict'].items() if regex.match(k)}
-    agent_state_dict = agent.state_dict()
-    agent_state_dict.update(filtered_state_dict)
-    agent.load_state_dict(agent_state_dict)
-    if len(filtered_state_dict) == len(checkpoint['agent_state_dict']):
-        return checkpoint['global_step']
-    else:
-        print("Loaded params: ", filtered_state_dict.keys())
-        return 0
-
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -231,7 +177,7 @@ if __name__ == "__main__":
     args.exp_name += "_" + args.env_id.replace("/", "").replace("-", "").lower()
     if args.env_configs:
         args.exp_name += "_" + args.env_configs.replace("{", "").replace("}", "").replace(":", "_").replace(",", "_").replace(" ", "").replace('"', "")
-    run_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}-{args.exp_name}_{args.seed}"
+    run_name = f"{datetime.now().strftime('%Y%m%d_%H%M%S')}-{args.exp_name}_{args.seed}"
     if args.track:
         import wandb
 
@@ -261,16 +207,14 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-    print(f"device: {device}")
 
     # env setup
-    env_configs = json.loads(args.env_configs) if args.env_configs else {}
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name, env_configs) for i in range(args.num_envs)],
+        [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    agent = Agent(envs, args.hidden_size, args.hidden_layers).to(device)
+    agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
     print(agent)
 
@@ -289,9 +233,8 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
-
     if args.checkpoint_load_path:
-        global_step = load_checkpoint(agent, optimizer, args.checkpoint_load_path, args.checkpoint_param_filter)
+        global_step = load_checkpoint(agent, optimizer, args.checkpoint_load_path)
     else:
         save_checkpoint(agent, optimizer, global_step, run_name)
 
@@ -303,8 +246,6 @@ if __name__ == "__main__":
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
-        successes = []
-        returns = []
         for step in range(0, args.num_steps):
             global_step += args.num_envs
             obs[step] = next_obs
@@ -326,17 +267,9 @@ if __name__ == "__main__":
             if "final_info" in infos:
                 for info in infos["final_info"]:
                     if info and "episode" in info:
+                        # print(f"global_step={global_step}, episodic_return={info['episode']['r']}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                        successes.append(info.get("is_success", 0))
-                        returns.append(info["episode"]["r"])
-
-        if returns:
-            successes = np.mean(successes)
-            returns = np.mean(returns)
-            writer.add_scalar("charts/mean_episodic_success", successes, global_step)
-            writer.add_scalar("charts/mean_episodic_return", returns, global_step)
-            pbar.set_postfix_str(f"step={global_step}, return={returns:.2f}, success={successes:.2f}")
 
         # bootstrap value if not done
         with torch.no_grad():
@@ -429,6 +362,7 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        # print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
         if iteration % args.checkpoint_every == 0:
