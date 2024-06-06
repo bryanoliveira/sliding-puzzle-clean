@@ -39,7 +39,7 @@ ARG WANDB_KEY
 ENV WANDB_API_KEY=$WANDB_KEY
 
 RUN mkdir /sliding-puzzle
-COPY ppo.py /sliding-puzzle
+COPY . /sliding-puzzle
 COPY entrypoint.sh /sliding-puzzle
 RUN chown -R 1000:root /sliding-puzzle && chmod -R 775 /sliding-puzzle
 WORKDIR /sliding-puzzle
