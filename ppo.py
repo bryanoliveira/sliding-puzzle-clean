@@ -105,6 +105,9 @@ class Args:
     """the filter to load checkpoint parameters"""
     checkpoint_every: int = 10000
 
+    early_stop_patience: int = None
+    """the patience for early stopping"""
+
 
 def make_env(env_id, idx, capture_video, run_name, env_configs):
     def thunk():
@@ -289,6 +292,7 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
+    early_stop_counter = 0
 
     if args.checkpoint_load_path:
         global_step = load_checkpoint(agent, optimizer, args.checkpoint_load_path, args.checkpoint_param_filter)
@@ -337,6 +341,15 @@ if __name__ == "__main__":
             writer.add_scalar("charts/mean_episodic_success", successes, global_step)
             writer.add_scalar("charts/mean_episodic_return", returns, global_step)
             pbar.set_postfix_str(f"step={global_step}, return={returns:.2f}, success={successes:.2f}")
+
+            if successes == 1:
+                early_stop_counter += 1
+            else:
+                early_stop_counter = 0
+
+            if args.early_stop_patience and early_stop_counter >= args.early_stop_patience:
+                print("Early stopping")
+                break
 
         # bootstrap value if not done
         with torch.no_grad():
