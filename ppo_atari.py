@@ -49,7 +49,7 @@ class Args:
     env_id: str = "BreakoutNoFrameskip-v4"
     """the id of the environment"""
     env_configs: str = None # '{"frameskip": 1, "repeat_action_probability": 0}'
-    total_timesteps: int = 10000000
+    total_timesteps: int = 1e7
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
@@ -92,7 +92,7 @@ class Args:
 
     checkpoint_load_path: str = None
     """the path to the checkpoint to load"""
-    checkpoint_every: int = 100
+    checkpoint_every: int = 1e6
 
 
 def make_env(env_id, idx, capture_video, run_name):
@@ -365,7 +365,7 @@ if __name__ == "__main__":
         # print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-        if iteration % args.checkpoint_every == 0:
+        if global_step % args.checkpoint_every == 0:
             save_checkpoint(agent, optimizer, global_step, run_name)
 
     envs.close()

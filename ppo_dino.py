@@ -53,7 +53,7 @@ class Args:
     env_id: str = "SlidingPuzzle-v0"
     env_configs: str = None
     """the id of the environment"""
-    total_timesteps: int = 10000000
+    total_timesteps: int = 1e7
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
@@ -108,7 +108,7 @@ class Args:
     """the path to the checkpoint to load"""
     checkpoint_param_filter: str = ".*"
     """the filter to load checkpoint parameters"""
-    checkpoint_every: int = 10000
+    checkpoint_every: int = 1e6
 
 
 def make_env(env_id, idx, capture_video, run_name, env_configs):
@@ -454,7 +454,7 @@ if __name__ == "__main__":
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-        if iteration % args.checkpoint_every == 0:
+        if global_step % args.checkpoint_every == 0:
             save_checkpoint(agent, optimizer, global_step, run_name)
 
     envs.close()
