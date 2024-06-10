@@ -124,13 +124,8 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
         else:
             env = gym.make(env_id, **env_configs)
         env = gym.wrappers.RecordEpisodeStatistics(env)
-        img_obs = (
-            min(env.observation_space.shape[-1], env.observation_space.shape[0]) in (3, 4)
-        )
-        if img_obs:
-            env = gym.wrappers.ResizeObservation(env, (84, 84))
-            # env = wrappers.ChannelFirstImageWrapper(env)
-            env = wrappers.NormalizedImageWrapper(env)
+        env = gym.wrappers.NormalizeReward(env, gamma=args.gamma)
+        env = gym.wrappers.ResizeObservation(env, (84, 84))
         return env
 
     return thunk
