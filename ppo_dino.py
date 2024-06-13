@@ -28,7 +28,6 @@ from stable_baselines3.common.atari_wrappers import (  # isort:skip
 )
 
 import sliding_puzzles
-import wrappers
 
 @dataclass
 class Args:
@@ -132,8 +131,8 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
             env = gym.wrappers.FrameStack(env, 4)
         elif img_obs:
             env = gym.wrappers.ResizeObservation(env, (84, 84))
-            env = wrappers.ChannelFirstImageWrapper(env)
-            env = wrappers.NormalizedImageWrapper(env)
+            env = sliding_puzzles.wrappers.ChannelFirstImageWrapper(env)
+            env = sliding_puzzles.wrappers.NormalizedImageWrapper(env)
         return env
 
     return thunk
@@ -312,7 +311,7 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
-
+    next_checkpoint = args.checkpoint_every
     if args.checkpoint_load_path:
         global_step = load_checkpoint(agent, optimizer, args.checkpoint_load_path, args.checkpoint_param_filter)
     else:
@@ -454,8 +453,9 @@ if __name__ == "__main__":
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-        if global_step % args.checkpoint_every == 0:
+        if global_step >= next_checkpoint:
             save_checkpoint(agent, optimizer, global_step, run_name)
+            next_checkpoint = global_step + args.checkpoint_every
 
     envs.close()
     writer.close()

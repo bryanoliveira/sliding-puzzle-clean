@@ -233,6 +233,7 @@ if __name__ == "__main__":
     next_obs = torch.Tensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
+    next_checkpoint = args.checkpoint_every
     if args.checkpoint_load_path:
         global_step = load_checkpoint(agent, optimizer, args.checkpoint_load_path)
     else:
@@ -365,8 +366,9 @@ if __name__ == "__main__":
         # print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
-        if global_step % args.checkpoint_every == 0:
+        if global_step >= next_checkpoint:
             save_checkpoint(agent, optimizer, global_step, run_name)
+            next_checkpoint = global_step + args.checkpoint_every
 
     envs.close()
     writer.close()
