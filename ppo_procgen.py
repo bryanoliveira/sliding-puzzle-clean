@@ -80,9 +80,9 @@ class Args:
 
     # to be filled in runtime
     batch_size: int = 0
-    """the batch size (computed in runtime)"""
+    """the batch size (computed in runtime : num_envs * num_steps)"""
     minibatch_size: int = 0
-    """the mini-batch size (computed in runtime)"""
+    """the mini-batch size (computed in runtime: batch_size // num_minibatches)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
@@ -94,6 +94,11 @@ class Args:
 
     early_stop_patience: int = None
     """the patience for early stopping"""
+    hidden_size: int = 256
+    """the agent hidden size"""
+    hidden_layers: int = 0
+
+    """the number of hidden layers"""
 
 
 def make_env(env_id, idx, capture_video, run_name, env_configs):
@@ -167,12 +172,15 @@ class Agent(nn.Module):
         conv_seqs += [
             nn.Flatten(),
             nn.ReLU(),
-            nn.Linear(in_features=shape[0] * shape[1] * shape[2], out_features=256),
+            nn.Linear(in_features=shape[0] * shape[1] * shape[2], out_features=args.hidden_size),
             nn.ReLU(),
         ]
-        self.network = nn.Sequential(*conv_seqs)
-        self.actor = layer_init(nn.Linear(256, envs.single_action_space.n), std=0.01)
-        self.critic = layer_init(nn.Linear(256, 1), std=1)
+        self.network = nn.Sequential(
+            *conv_seqs,
+            *[nn.Linear(args.hidden_size, args.hidden_size), nn.ReLU()] * args.hidden_layers
+        )
+        self.actor = layer_init(nn.Linear(args.hidden_size, envs.single_action_space.n), std=0.01)
+        self.critic = layer_init(nn.Linear(args.hidden_size, 1), std=1)
 
     def get_value(self, x):
         return self.critic(self.network(x.permute((0, 3, 1, 2)) / 255.0))  # "bhwc" -> "bchw"
@@ -273,11 +281,11 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
-
+ 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs = torch.Tensor(envs.reset()[0]).to(device)
+    next_obs = torch.Tensor(envs.reset(seed=args.seed)[0]).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
     early_stop_counter = 0
@@ -320,8 +328,8 @@ if __name__ == "__main__":
                     if info and "episode" in info:
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                        returns.append(info["episode"]["r"])
                         successes.append(info.get("is_success", 0))
+                        returns.append(info["episode"]["r"])
 
         if returns:
             successes = np.mean(successes)

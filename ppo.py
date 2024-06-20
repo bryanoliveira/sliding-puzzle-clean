@@ -230,10 +230,12 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
+
     args.exp_name += "_" + args.env_id.replace("/", "").replace("-", "").lower()
     if args.env_configs:
         args.exp_name += "_" + args.env_configs.replace("{", "").replace("}", "").replace(":", "_").replace(",", "_").replace(" ", "").replace('"', "")
     run_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}-{args.exp_name}_{args.seed}"
+
     if args.track:
         import wandb
 
@@ -263,7 +265,6 @@ if __name__ == "__main__":
     torch.backends.cudnn.deterministic = args.torch_deterministic
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
-    print(f"device: {device}")
 
     # env setup
     env_configs = json.loads(args.env_configs) if args.env_configs else {}
@@ -274,7 +275,9 @@ if __name__ == "__main__":
 
     agent = Agent(envs, args.hidden_size, args.hidden_layers).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
+    print("Device:", device)
     print(agent)
+    print(optimizer)
 
     # ALGO Logic: Storage setup
     obs = torch.zeros((args.num_steps, args.num_envs) + envs.single_observation_space.shape).to(device)
@@ -287,8 +290,7 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs, _ = envs.reset(seed=args.seed)
-    next_obs = torch.Tensor(next_obs).to(device)
+    next_obs = torch.Tensor(envs.reset(seed=args.seed)[0]).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
     early_stop_counter = 0
@@ -298,7 +300,7 @@ if __name__ == "__main__":
     else:
         save_checkpoint(agent, optimizer, global_step, run_name)
 
-    pbar = tqdm(range(1, args.num_iterations + 1), desc="iteration")
+    pbar = tqdm(range(1, args.num_iterations + 1), desc="Iterations")
     for iteration in pbar:
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
