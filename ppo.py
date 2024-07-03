@@ -230,10 +230,18 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
+    args.env_configs = json.loads(args.env_configs) if args.env_configs else {}
 
-    args.exp_name += "_" + args.env_id.replace("/", "").replace("-", "").lower()
-    if args.env_configs:
-        args.exp_name += "_" + args.env_configs.replace("{", "").replace("}", "").replace(":", "_").replace(",", "_").replace(" ", "").replace('"', "")
+    if args.env_id != "SlidingPuzzle-v0":
+        args.exp_name += "_" + args.env_id.replace("/", "").replace("-", "").lower()
+    if "w" in args.env_configs:
+        args.exp_name += f"_w{args.env_configs['w']}"
+    if "variation" in args.env_configs:
+        args.exp_name += f"_{args.env_configs['variation']}"
+    if "image_folder" in args.env_configs:
+        args.exp_name += f"_{args.env_configs['image_folder']}"
+    if "image_pool_size" in args.env_configs:
+        args.exp_name += f"_p{args.env_configs['image_pool_size']}"
     run_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}-{args.exp_name}_{args.seed}"
 
     if args.track:
@@ -267,9 +275,8 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    env_configs = json.loads(args.env_configs) if args.env_configs else {}
     envs = gym.vector.SyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name, env_configs) for i in range(args.num_envs)],
+        [make_env(args.env_id, i, args.capture_video, run_name, args.env_configs) for i in range(args.num_envs)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
