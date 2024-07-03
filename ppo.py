@@ -239,7 +239,7 @@ if __name__ == "__main__":
     if "variation" in args.env_configs:
         args.exp_name += f"_{args.env_configs['variation']}"
     if "image_folder" in args.env_configs:
-        args.exp_name += f"_{args.env_configs['image_folder']}"
+        args.exp_name += f"_{args.env_configs['image_folder'].split('/')[-1].replace('_', '').replace('-', '').lower()}"
     if "image_pool_size" in args.env_configs:
         args.exp_name += f"_p{args.env_configs['image_pool_size']}"
     run_name = f"{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}-{args.exp_name}_{args.seed}"
