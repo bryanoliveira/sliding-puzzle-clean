@@ -1,9 +1,11 @@
 # docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
+import collections
 import datetime
 import json
 import os
 import random
 import re
+import resource
 import time
 from dataclasses import dataclass
 import yaml
@@ -33,7 +35,7 @@ import sliding_puzzles
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
     """the name of this experiment"""
-    seed: int = 1
+    seed: int = 0
     """seed of the experiment"""
     torch_deterministic: bool = True
     """if toggled, `torch.backends.cudnn.deterministic=False`"""
@@ -45,7 +47,7 @@ class Args:
     """the wandb's project name"""
     wandb_entity: str = "bryanoliveira"
     """the entity (team) of wandb's project"""
-    capture_video: bool = False
+    capture_video: bool = True
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
@@ -150,7 +152,7 @@ class Agent(nn.Module):
         super().__init__()
         img_obs = (
             min(envs.single_observation_space.shape[-1], envs.single_observation_space.shape[0]) in (3, 4)
-            and "-ram" not in envs.envs[0].spec.id
+            and "-ram" not in args.env_id
         )
         if img_obs:
             self.encoder = nn.Sequential(
@@ -230,7 +232,10 @@ if __name__ == "__main__":
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
     args.num_iterations = args.total_timesteps // args.batch_size
+    if args.seed == 0:
+        args.seed = random.randint(1, 1000000)
     args.env_configs = json.loads(args.env_configs) if args.env_configs else {}
+    args.env_configs['seed'] = args.seed
 
     if args.env_id != "SlidingPuzzle-v0":
         args.exp_name += "_" + args.env_id.replace("/", "").replace("-", "").lower()
@@ -266,6 +271,9 @@ if __name__ == "__main__":
     with open(f"runs/{run_name}/config.yaml", "w") as f:
         yaml.dump(vars(args), f)
 
+    print("Configs:")
+    print(json.dumps(dict(sorted(vars(args).items())), indent=2))
+
     # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
@@ -274,11 +282,23 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
+    # increase file descriptor limits so we can run many async envs
+    soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+    resource.setrlimit(resource.RLIMIT_NOFILE, (hard, hard))
+    print(f"Soft file descriptor limit: {soft}, Hard limit: {hard}")
     # env setup
-    envs = gym.vector.SyncVectorEnv(
+    envs = gym.vector.AsyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, run_name, args.env_configs) for i in range(args.num_envs)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+
+    if "slidingpuzzles" in args.env_id.lower():
+        first_env_images = envs.envs[0].images
+        for env in envs.envs[1:]:
+            assert env.images == first_env_images, "All environments should have the same image list"
+
+        env_states = [env.unwrapped.state.tolist() for env in envs.envs]
+        assert len(set(map(tuple, env_states))) > 1, "All environment states are identical."
 
     agent = Agent(envs, args.hidden_size, args.hidden_layers).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
@@ -293,6 +313,9 @@ if __name__ == "__main__":
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+
+    success_deque = collections.deque(maxlen=args.num_envs)
+    return_deque = collections.deque(maxlen=args.num_envs)
 
     # TRY NOT TO MODIFY: start the game
     global_step = 0
@@ -315,8 +338,6 @@ if __name__ == "__main__":
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
-        successes = []
-        returns = []
         for step in range(0, args.num_steps):
             global_step += args.num_envs
             obs[step] = next_obs
@@ -340,17 +361,17 @@ if __name__ == "__main__":
                     if info and "episode" in info:
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
-                        successes.append(info.get("is_success", 0))
-                        returns.append(info["episode"]["r"])
+                        success_deque.append(info.get("is_success", 0))
+                        return_deque.append(info["episode"]["r"])
 
-        if returns:
-            successes = np.mean(successes)
-            returns = np.mean(returns)
-            writer.add_scalar("charts/mean_episodic_success", successes, global_step)
-            writer.add_scalar("charts/mean_episodic_return", returns, global_step)
-            pbar.set_postfix_str(f"step={global_step}, return={returns:.2f}, success={successes:.2f}")
+        if len(success_deque) > 0:
+            success_rate = float(sum(success_deque) / args.num_envs)
+            mean_return = float(sum(return_deque) / len(return_deque))
+            writer.add_scalar("charts/rolling_success_rate", success_rate, global_step)
+            writer.add_scalar("charts/rolling_mean_return", mean_return, global_step)
+            pbar.set_postfix_str(f"step={global_step}, return={mean_return:.2f}, success={success_rate:.2f}")
 
-            if successes == 1:
+            if success_rate == 1 and len(success_deque) == args.num_envs:
                 early_stop_counter += 1
             else:
                 early_stop_counter = 0
