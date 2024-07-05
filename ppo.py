@@ -58,9 +58,9 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 8
+    num_envs: int = 1024
     """the number of parallel game environments"""
-    num_steps: int = 128
+    num_steps: int = 32
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -74,7 +74,7 @@ class Args:
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.1
+    clip_coef: float = 0.2
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
@@ -106,7 +106,7 @@ class Args:
     """the filter to load checkpoint parameters"""
     checkpoint_every: int = 1e6
 
-    early_stop_patience: int = None
+    early_stop_patience: int = 100
     """the patience for early stopping"""
 
 
@@ -366,9 +366,12 @@ if __name__ == "__main__":
 
         if len(success_deque) > 0:
             success_rate = float(sum(success_deque) / args.num_envs)
-            mean_return = float(sum(return_deque) / len(return_deque))
             writer.add_scalar("charts/rolling_success_rate", success_rate, global_step)
-            writer.add_scalar("charts/rolling_mean_return", mean_return, global_step)
+
+            mean_return = float(sum(return_deque) / len(return_deque))
+            if len(return_deque) >= args.num_envs:
+                writer.add_scalar("charts/rolling_mean_return", mean_return, global_step)
+
             pbar.set_postfix_str(f"step={global_step}, return={mean_return:.2f}, success={success_rate:.2f}")
 
             if success_rate == 1 and len(success_deque) == args.num_envs:
