@@ -11,13 +11,13 @@ def run_single_seed(image_pool_size):
                 "w": 3,
                 "variation": "image",
                 "image_folder": "imagenet-1k",
-                "image_pool_size": image_pool_size,
+                "image_pool_size": int(image_pool_size),
             }
         ),
-        "--num_envs", "1",
-        "--num_steps", "32",
-        "--total_timesteps", "10000",
-        "--no_track",
+        # "--num_envs", "1",
+        # "--num_steps", "32",
+        # "--total_timesteps", "10000",
+        # "--no_track",
     ]
 
     print(f"---- Running command: {cmd}")

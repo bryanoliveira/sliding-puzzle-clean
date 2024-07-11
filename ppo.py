@@ -60,7 +60,7 @@ class Args:
     """the learning rate of the optimizer"""
     num_envs: int = 1024
     """the number of parallel game environments"""
-    num_steps: int = 32
+    num_steps: int = 4
     """the number of steps to run in each environment per policy rollout"""
     anneal_lr: bool = True
     """Toggle learning rate annealing for policy and value networks"""
@@ -74,7 +74,7 @@ class Args:
     """the K epochs to update the policy"""
     norm_adv: bool = True
     """Toggles advantages normalization"""
-    clip_coef: float = 0.2
+    clip_coef: float = 0.1
     """the surrogate clipping coefficient"""
     clip_vloss: bool = True
     """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
@@ -87,10 +87,11 @@ class Args:
     target_kl: float = None
     """the target KL divergence threshold"""
 
-    """the agent hidden size"""
     hidden_size: int = 512
-    """the number of hidden layers"""
+    """the agent hidden size"""
     hidden_layers: int = 0
+    """the number of hidden layers"""
+    min_res: int = 7
 
     # to be filled in runtime
     batch_size: int = 0
@@ -130,11 +131,11 @@ def make_env(env_id, idx, capture_video, run_name, env_configs):
                 env = FireResetEnv(env)
             env = ClipRewardEnv(env)
             if img_obs:
-                env = gym.wrappers.ResizeObservation(env, (84, 84))
+                env = gym.wrappers.ResizeObservation(env, env_configs.get("image_size", (84, 84)))
                 env = gym.wrappers.GrayScaleObservation(env)
             env = gym.wrappers.FrameStack(env, 4)
         elif img_obs:
-            env = gym.wrappers.ResizeObservation(env, (84, 84))
+            env = gym.wrappers.ResizeObservation(env, env_configs.get("image_size", (84, 84)))
             env = sliding_puzzles.wrappers.ChannelFirstImageWrapper(env)
             env = sliding_puzzles.wrappers.NormalizedImageWrapper(env)
         return env
@@ -148,7 +149,7 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
     return layer
 
 class Agent(nn.Module):
-    def __init__(self, envs, env_id, hidden_size, hidden_layers):
+    def __init__(self, envs, env_id, hidden_size, hidden_layers, min_res):
         super().__init__()
         img_obs = (
             min(envs.single_observation_space.shape[-1], envs.single_observation_space.shape[0]) in (3, 4)
@@ -163,7 +164,7 @@ class Agent(nn.Module):
                 layer_init(nn.Conv2d(64, 64, 3, stride=1)),
                 nn.ReLU(),
                 nn.Flatten(),
-                layer_init(nn.Linear(64 * 7 * 7, hidden_size)),
+                layer_init(nn.Linear(64 * min_res * min_res, hidden_size)),
                 nn.ReLU(),
             )
         else:
@@ -231,7 +232,7 @@ def main():
     args = tyro.cli(Args)
     args.batch_size = int(args.num_envs * args.num_steps)
     args.minibatch_size = int(args.batch_size // args.num_minibatches)
-    args.num_iterations = args.total_timesteps // args.batch_size
+    args.num_iterations = int(args.total_timesteps // args.batch_size)
     if args.seed == 0:
         args.seed = random.randint(1, 1000000)
     args.env_configs = json.loads(args.env_configs) if args.env_configs else {}
@@ -300,7 +301,7 @@ def main():
         env_states = [env.unwrapped.state.tolist() for env in envs.envs]
         assert len(set(map(tuple, env_states))) > 1, "All environment states are identical."
 
-    agent = Agent(envs, args.env_id, args.hidden_size, args.hidden_layers).to(device)
+    agent = Agent(envs, args.env_id, args.hidden_size, args.hidden_layers, args.min_res).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
     print("Device:", device)
     print(agent)
@@ -484,7 +485,7 @@ def main():
     envs.close()
     writer.close()
 
-    return {"success_rate": random.uniform(0, 1)} # success_rate
+    return {"success_rate": success_rate}
 
 
 if __name__ == "__main__":
