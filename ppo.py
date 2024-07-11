@@ -113,6 +113,7 @@ class Args:
 
 def make_env(env_id, idx, capture_video, run_name, env_configs):
     def thunk():
+        env_configs['seed'] = env_configs['seed'] + idx
         if capture_video and idx == 0:
             env = gym.make(env_id, render_mode="rgb_array", **env_configs)
             env = gym.wrappers.RecordVideo(env, f"runs/{run_name}/videos")
@@ -237,8 +238,10 @@ def main():
         args.seed = random.randint(1, 1000000)
     args.env_configs = json.loads(args.env_configs) if args.env_configs else {}
     args.env_configs['seed'] = args.seed
+    if "slidingpuzzle" in args.env_id.lower():
+        args.env_configs['image_pool_seed'] = args.seed
 
-    if args.env_id != "SlidingPuzzle-v0":
+    if "slidingpuzzle" not in args.env_id.lower():
         args.exp_name += "_" + args.env_id.replace("/", "").replace("-", "").lower()
     if "w" in args.env_configs:
         args.exp_name += f"_w{args.env_configs['w']}"
@@ -293,13 +296,19 @@ def main():
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
 
-    if "slidingpuzzles" in args.env_id.lower():
-        first_env_images = envs.envs[0].images
-        for env in envs.envs[1:]:
-            assert env.images == first_env_images, "All environments should have the same image list"
+    if "slidingpuzzle" in args.env_id.lower():
+        print("Checking SlidingPuzzle envs")
+        envs.reset()
 
-        env_states = [env.unwrapped.state.tolist() for env in envs.envs]
-        assert len(set(map(tuple, env_states))) > 1, "All environment states are identical."
+        if args.env_configs.get("variation") == "image":
+            env_images = envs.get_attr("images")
+            for i, images in enumerate(env_images[1:]):
+                assert images == env_images[i], f"All environments should have the same image list. Got: {env_images[i]} vs {images}"
+        else:
+            print("Variation is not image")
+
+        env_states = envs.get_attr("state")
+        assert not all(np.array_equal(env_states[i], state) for i, state in enumerate(env_states[1:])), "All environment states are identical."
 
     agent = Agent(envs, args.env_id, args.hidden_size, args.hidden_layers, args.min_res).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
